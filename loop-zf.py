@@ -1451,3 +1451,97 @@ def all_loop_vertex_sets(g):
         out.append(S)
 
     return sorted(out, key=lambda s: (len(s), sorted(s)))
+
+def forts(g, include_empty=False, include_full=True):
+    """
+    Return all forts for the simple graph (standard zero forcing setting).
+
+    A fort S satisfies:
+      for every vertex v in V(G), |N(v) ∩ S| != 1,
+    where N(v) is the (open) neighborhood in the simple graph.
+
+    Parameters
+    ----------
+    g : graph-like
+    include_empty : bool
+        Whether to include the empty fort.
+    include_full : bool
+        Whether to include V(G) when it is a fort.
+    """
+    vertices, adj_mask, n = _adjacency_lists(g)
+    n = int(n)
+
+    if n == 0:
+        return [frozenset()] if include_empty else []
+
+    nbr_masks = [int(adj_mask[v]) for v in range(n)]
+
+    def is_fort_mask(mask):
+        mask = int(mask)
+        for v in range(n):
+            c = int((nbr_masks[v] & mask).bit_count())
+            if c == 1:
+                return False
+        return True
+
+    forts_out = []
+    full_mask = int((1 << n) - 1)
+
+    for mask in range(1 << n):
+        mask = int(mask)
+
+        if not include_empty and mask == 0:
+            continue
+        if not include_full and mask == full_mask:
+            continue
+
+        if is_fort_mask(mask):
+            forts_out.append(
+                frozenset(vertices[i] for i in range(n) if (mask >> i) & 1)
+            )
+
+    return sorted(forts_out, key=lambda s: (len(s), sorted(s)))
+
+
+def is_fort(g, fort_set):
+    """
+    Decide whether fort_set is a fort in the simple graph.
+
+    S is a fort iff for every vertex v in V(G),
+      |N(v) ∩ S| != 1,
+    where N(v) is the (open) neighborhood in the simple graph.
+    """
+    vertices, adj_mask, n = _adjacency_lists(g)
+    mask = _bitmask_from_vertices(vertices, fort_set)
+    n = int(n)
+
+    for v in range(n):
+        nbrs = int(adj_mask[v])
+        if int((nbrs & mask).bit_count()) == 1:
+            return False
+    return True
+
+
+def minimal_forts(g, include_empty=False):
+    """
+    Return all inclusion-minimal forts in the simple graph.
+
+    By default, excludes the empty set (set include_empty=True to allow it).
+    """
+    all_forts = forts(
+        g,
+        include_empty=include_empty,
+        include_full=True,
+    )
+
+    minimal = []
+    for S in all_forts:
+        is_minimal = True
+        for T in all_forts:
+            if T != S and T.issubset(S):
+                is_minimal = False
+                break
+        if is_minimal:
+            minimal.append(S)
+
+    return sorted(minimal, key=lambda s: (len(s), sorted(s)))
