@@ -1,6 +1,10 @@
 import itertools
 
 
+def _popcount(x):
+    return int(x).bit_count()
+
+
 def generate_transversal_vectors(
     dim=8,
     min_weight=3,
@@ -10,88 +14,59 @@ def generate_transversal_vectors(
 ):
     """
     Find sets of binary vectors of length `dim` such that:
-      1) each selected vector has Hamming weight >= min_weight
-      2) selected set size is exactly target_num_vecs
-      3) the minimum transversal size is exactly min_transversal_size, i.e.
-         - every coordinate subset of size (min_transversal_size - 1) FAILS to hit all vectors
-           (equivalently: for each such subset S, there exists a selected vector with zeros on S)
-         - every coordinate subset of size min_transversal_size HITS all vectors
-           (equivalently: no selected vector is all-zeros on any such subset)
-
-    Returns:
-      list of solutions; each solution is a list of bitstrings.
-      If find_all=False, returns at most one solution.
+      - each selected vector has weight >= min_weight
+      - selected set size is exactly target_num_vecs
+      - transversal number is exactly t = min_transversal_size:
+          (A) every (t-1)-subset S fails to hit all vectors
+              <=> for every S, at least one selected vector is zero on all coords in S
+          (B) there exists at least one t-subset T that hits all vectors
+              <=> there exists T such that every selected vector has at least one 1 in T
     """
 
-    # --------------------------
-    # Basic parameter guards
-    # --------------------------
+    dim = int(dim)
+    min_weight = int(min_weight)
+    t = int(min_transversal_size)
+    target_num_vecs = int(target_num_vecs)
+
     if dim <= 0:
         return []
-    if min_transversal_size < 1 or min_transversal_size > dim:
+    if t < 1 or t > dim:
         return []
     if min_weight < 0 or min_weight > dim:
         return []
     if target_num_vecs < 0:
         return []
 
-    # ------------------------------------------------------------
-    # 1) Candidate vectors as integer bitmasks (fast representation)
-    # ------------------------------------------------------------
-    # No proxy filter; enforce exact transversal property in search.
-    candidates = [v for v in range(1 << dim) if v.bit_count() >= min_weight]
+    # Candidates: all vectors meeting weight bound
+    candidates = [v for v in range(1 << dim) if _popcount(v) >= min_weight]
     n = len(candidates)
     if target_num_vecs > n:
         return []
 
-    # ------------------------------------------------------------
-    # 2) Build subsets:
-    #    - short subsets of size t-1 must each be "covered"
-    #    - exact subsets of size t must each be "hit" (forbidden all-zero)
-    # ------------------------------------------------------------
-    t = min_transversal_size
-
+    # (t-1)-subsets that must each be "covered by a witness vector"
     short_masks = []
     for comb in itertools.combinations(range(dim), t - 1):
         m = 0
         for i in comb:
             m |= (1 << i)
         short_masks.append(m)
+    m_short = len(short_masks)
+    full_short_cover = (1 << m_short) - 1 if m_short > 0 else 0
 
-    exact_masks = []
+    # t-subsets: at least one must be a global hitter
+    t_masks = []
     for comb in itertools.combinations(range(dim), t):
         m = 0
         for i in comb:
             m |= (1 << i)
-        exact_masks.append(m)
+        t_masks.append(m)
+    m_t = len(t_masks)
 
-    m_short = len(short_masks)
-
-    # Degenerate case t=1:
-    # - (t-1)=0 subset coverage condition is vacuous (single empty subset)
-    # - exact size-1 subsets must all hit all vectors => every chosen vector must be all-ones.
-    if t == 1:
-        all_ones = (1 << dim) - 1
-        valid_idxs = [i for i, v in enumerate(candidates) if v == all_ones]
-        if len(valid_idxs) < target_num_vecs:
-            return []
-        vec_to_str = lambda x: format(x, f"0{dim}b")
-        if not find_all:
-            return [[vec_to_str(candidates[i]) for i in valid_idxs[:target_num_vecs]]]
-        out = []
-        for comb in itertools.combinations(valid_idxs, target_num_vecs):
-            out.append([vec_to_str(candidates[i]) for i in comb])
-        return out
-
-    # ------------------------------------------------------------
-    # 3) Precompute for each candidate:
-    #    short_cov_bits: which (t-1)-subsets it "covers"
-    #      (vector has zeros on that subset mask)
-    #    exact_bad_mask_bits: which t-subsets it violates
-    #      (vector has zeros on that subset mask) -> forbidden if any chosen vector violates any t-subset
-    # ------------------------------------------------------------
+    # Precompute:
+    # short_cov_bits[i]: which (t-1)-subsets vector i is zero on (witnesses failure)
+    # miss_t_bits[i]: which t-subsets vector i MISSES (i.e., has all zeros on T)
     short_cov_bits = [0] * n
-    exact_bad_bits = [0] * n
+    miss_t_bits = [0] * n
 
     for i, v in enumerate(candidates):
         sc = 0
@@ -100,97 +75,72 @@ def generate_transversal_vectors(
                 sc |= (1 << j)
         short_cov_bits[i] = sc
 
-        eb = 0
-        for j, em in enumerate(exact_masks):
-            if (v & em) == 0:
-                eb |= (1 << j)
-        exact_bad_bits[i] = eb
+        mt = 0
+        for j, tm in enumerate(t_masks):
+            if (v & tm) == 0:
+                mt |= (1 << j)
+        miss_t_bits[i] = mt
 
-    full_short_cover = (1 << m_short) - 1
-
-    # Fast impossibility check:
-    # if union of all candidate short coverage doesn't cover all short subsets, no solution exists.
+    # Necessary feasibility for (A)
     union_all_short = 0
-    for x in short_cov_bits:
-        union_all_short |= x
+    for b in short_cov_bits:
+        union_all_short |= b
     if union_all_short != full_short_cover:
         return []
 
-    # ------------------------------------------------------------
-    # 4) Candidate ordering heuristic:
-    #    Prefer vectors that cover many short subsets and violate few exact subsets.
-    # ------------------------------------------------------------
+    # Candidate ordering heuristic
     order = sorted(
         range(n),
-        key=lambda i: (short_cov_bits[i].bit_count(), -exact_bad_bits[i].bit_count()),
+        key=lambda i: (_popcount(short_cov_bits[i]), -_popcount(miss_t_bits[i])),
         reverse=True,
     )
     candidates = [candidates[i] for i in order]
     short_cov_bits = [short_cov_bits[i] for i in order]
-    exact_bad_bits = [exact_bad_bits[i] for i in order]
+    miss_t_bits = [miss_t_bits[i] for i in order]
 
-    # ------------------------------------------------------------
-    # 5) Suffix unions for pruning
-    # ------------------------------------------------------------
+    # Suffix union for short-cover pruning
     suffix_short_union = [0] * (n + 1)
     for i in range(n - 1, -1, -1):
         suffix_short_union[i] = suffix_short_union[i + 1] | short_cov_bits[i]
 
-    # ------------------------------------------------------------
-    # 6) Backtracking with strong pruning
-    # ------------------------------------------------------------
     solutions_idx = []
     chosen = []
 
-    def backtrack(start_idx, chosen_count, short_covered, exact_bad_union):
-        # Stop after first if requested
+    # miss_union over chosen vectors:
+    # bit j=1 means "some chosen vector misses t-subset j"
+    # A t-subset hits ALL chosen vectors iff its bit in miss_union is 0.
+    def backtrack(start_idx, chosen_count, short_covered, miss_union):
         if not find_all and solutions_idx:
             return
 
-        # If any chosen vector already violates some t-subset, fail immediately.
-        # (A t-subset must hit ALL selected vectors.)
-        if exact_bad_union != 0:
-            return
-
-        # Reached target number of vectors
         if chosen_count == target_num_vecs:
-            if short_covered == full_short_cover:
+            cond_A = (short_covered == full_short_cover)
+            cond_B = (miss_union != (1 << m_t) - 1)  # at least one t-subset not missed by anyone
+            if cond_A and cond_B:
                 solutions_idx.append(chosen.copy())
             return
 
-        # Need this many more vectors
         need = target_num_vecs - chosen_count
-
-        # Not enough vectors left
         if n - start_idx < need:
             return
 
-        # Even with all remaining vectors, can't cover all short subsets
+        # prune A
         if (short_covered | suffix_short_union[start_idx]) != full_short_cover:
             return
 
-        # Include current
+        # Include
         chosen.append(start_idx)
         backtrack(
             start_idx + 1,
             chosen_count + 1,
             short_covered | short_cov_bits[start_idx],
-            exact_bad_union | exact_bad_bits[start_idx],
+            miss_union | miss_t_bits[start_idx],
         )
         chosen.pop()
 
-        # Exclude current
-        backtrack(start_idx + 1, chosen_count, short_covered, exact_bad_union)
+        # Exclude
+        backtrack(start_idx + 1, chosen_count, short_covered, miss_union)
 
     backtrack(0, 0, 0, 0)
 
-    # ------------------------------------------------------------
-    # 7) Convert solutions to bitstrings
-    # ------------------------------------------------------------
-    def vec_to_str(x):
-        return format(x, f"0{dim}b")
-
-    out = []
-    for sol in solutions_idx:
-        out.append([vec_to_str(candidates[i]) for i in sol])
-    return out
+    return [[format(candidates[i], f"0{dim}b") for i in sol] for sol in solutions_idx]
