@@ -1,0 +1,370 @@
+"""Experiment 2 -- Bit Claim: if Zhat(G) = Zhat(G-v)+1 ("v-critical"), do BOTH loop bits
+at v attain the max, i.e. Zhat^0(G;v) = Zhat^1(G;v) = Zhat(G)?
+
+Also collect, for ALL (G,v):  (s, gap0, gap1) where s = Zhat(G)-Zhat(G-v),
+gap_b = Zhat(G) - Zhat^b(G;v)  (>=0).
+"""
+from zf import parse_graph6, Z_loop, components
+import sys
+from collections import Counter
+
+memo_zl = {}
+def ZL(n, adj, loops):
+    key = (n, tuple(adj), loops)
+    if key not in memo_zl:
+        memo_zl[key] = Z_loop(n, adj, loops)
+    return memo_zl[key]
+
+def zhat_bits(n, adj, v):
+    """returns (Zhat, Zhat^0 at v, Zhat^1 at v)"""
+    best = [-1, -1]   # by bit at v
+    for loops in range(1 << n):
+        b = (loops >> v) & 1
+        z = ZL(n, adj, loops)
+        if z > best[b]: best[b] = z
+    return max(best), best[0], best[1]
+
+def delv(n, adj, v):
+    vs = [u for u in range(n) if u != v]
+    idx = {u: i for i, u in enumerate(vs)}
+    a2 = [0]*(n-1)
+    for u in vs:
+        nb = adj[u] & ~(1 << v)
+        while nb:
+            b = nb & -nb; a2[idx[u]] |= 1 << idx[b.bit_length()-1]; nb ^= b
+    return n-1, a2
+
+def zhat_plain(n, adj):
+    best = -1
+    for loops in range(1 << n):
+        z = ZL(n, adj, loops)
+        if z > best: best = z
+    return best
+
+def main(maxn=7, gfile='conn_le7.g6'):
+    dist = Counter(); crit_bad = []
+    total_pairs = 0; crit_pairs = 0
+    for line in open(gfile):
+        s = line.strip()
+        if not s: continue
+        n, adj = parse_graph6(s)
+        if n > maxn: continue
+        for v in range(n):
+            zh, z0, z1 = zhat_bits(n, adj, v)
+            m, a2 = delv(n, adj, v)
+            zhm = zhat_plain(m, a2) if m else 0
+            sspread = zh - zhm
+            dist[(sspread, zh - z0, zh - z1)] += 1
+            total_pairs += 1
+            if sspread == 1:
+                crit_pairs += 1
+                if z0 != zh or z1 != zh:
+                    crit_bad.append((s, v, zh, z0, z1, zhm))
+    print("pairs:", total_pairs, "critical (s=+1):", crit_pairs)
+    print("(s, gap0, gap1) distribution:")
+    for k in sorted(dist): print("  ", k, dist[k])
+    print("Bit Claim violations among critical:", len(crit_bad))
+    for e in crit_bad[:10]: print("  BAD", e)
+
+if __name__ == '__main__':
+    main(int(sys.argv[1]) if len(sys.argv) > 1 else 7)
+
+
+"""Zhat-level census at cut decompositions (n<=7):
+for each decomp: s1, s2, per-side per-bit maxima, mismatch patterns, formula check;
+for mismatch cases record achieving loopings of G and their side traits.
+Also: pointwise bit-flip distribution z(L xor v) - z(L)."""
+from zf import parse_graph6, Z_loop, components
+import sys
+from collections import Counter
+
+memo = {}
+def ZL(n, adj, loops):
+    k = (tuple(adj), loops)
+    if k not in memo: memo[k] = Z_loop(n, adj, loops)
+    return memo[k]
+
+def sub(adj, mask):
+    vs = [v for v in range(len(adj)) if (mask >> v) & 1]
+    idx = {v: i for i, v in enumerate(vs)}
+    a2 = [0]*len(vs)
+    for v in vs:
+        nb = adj[v] & mask
+        while nb:
+            b = nb & -nb; a2[idx[v]] |= 1 << idx[b.bit_length()-1]; nb ^= b
+    return len(vs), a2, idx
+
+def zhat_bits_at(n, adj, v):
+    best = [-1, -1]
+    for loops in range(1 << n):
+        z = ZL(n, adj, loops)
+        b = (loops >> v) & 1
+        if z > best[b]: best[b] = z
+    return best  # [Zhat^0, Zhat^1]
+
+def zhat(n, adj):
+    if n == 0: return 0
+    return max(ZL(n, adj, L) for L in range(1 << n))
+
+def cutverts(n, adj):
+    full = (1 << n) - 1
+    return [v for v in range(n) if len(components(n, adj, full & ~(1 << v))) > 1]
+
+def decomps(n, adj):
+    full = (1 << n) - 1
+    for v in cutverts(n, adj):
+        comps = components(n, adj, full & ~(1 << v))
+        k = len(comps)
+        for t in range(1, 1 << (k-1)):
+            A = comps[0]; B = 0
+            for i in range(1, k):
+                if (t >> (i-1)) & 1: B |= comps[i]
+                else: A |= comps[i]
+            yield v, A | (1 << v), B | (1 << v)
+
+def main(maxn=7, gfile='conn_le7.g6'):
+    pat = Counter(); formviol = 0; mism_examples = Counter()
+    flip = Counter()
+    for line in open(gfile):
+        g6 = line.strip()
+        if not g6: continue
+        n, adj = parse_graph6(g6)
+        if n > maxn: continue
+        # pointwise bit-flip distribution (only n<=6 to keep cheap)
+        if n <= 6:
+            for v in range(n):
+                for loops in range(1 << n):
+                    if (loops >> v) & 1: continue
+                    d = ZL(n, adj, loops ^ (1 << v)) - ZL(n, adj, loops)
+                    flip[d] += 1
+        for v, m1, m2 in decomps(n, adj):
+            zg = zhat(n, adj)
+            n1, a1, i1 = sub(adj, m1); n2, a2_, i2 = sub(adj, m2)
+            b1 = zhat_bits_at(n1, a1, i1[v]); b2 = zhat_bits_at(n2, a2_, i2[v])
+            z1, z2 = max(b1), max(b2)
+            n1d, a1d, _ = sub(adj, m1 & ~(1 << v)); n2d, a2d, _ = sub(adj, m2 & ~(1 << v))
+            z1m, z2m = zhat(n1d, a1d), zhat(n2d, a2d)
+            s1, s2 = z1 - z1m, z2 - z2m
+            form = max(z1 + z2, z1m + z2m) - 1
+            if zg != form: formviol += 1
+            # attainment sets
+            A1 = tuple(b for b in (0, 1) if b1[b] == z1)
+            A2 = tuple(b for b in (0, 1) if b2[b] == z2)
+            mism = not set(A1) & set(A2)
+            key = ((s1, s2) if s1 >= s2 else (s2, s1), mism)
+            pat[key] += 1
+            if mism and (s1 + s2 >= 1):
+                mism_examples[(s1, s2)] += 1
+                if mism_examples[(s1, s2)] <= 3:
+                    print("MISMATCH", (s1, s2), g6, "v=", v, "side-bit-maxes", b1, b2,
+                          "dels", z1m, z2m, "Zhat(G)=", zg, "form=", form)
+    print("\n(s-pattern, mismatch?) counts:")
+    for k in sorted(pat): print("  ", k, pat[k])
+    print("formula violations:", formviol)
+    print("pointwise flip z(L^v)-z(L) distribution:", dict(sorted(flip.items())))
+
+if __name__ == '__main__':
+    main(int(sys.argv[1]) if len(sys.argv) > 1 else 7)
+
+
+"""Exact transfer law, take 3. Machines (B subset V_i minus v; 'act'=v may force):
+  P : v prefilled, active throughout, fill V_i
+  z': v unfilled, active throughout, fill V_i
+  U : v unfilled, inert throughout, fill V_i
+  F : v unfilled inert phase1 with v in cl1; then active closure; fill V_i
+  W : v prefilled, inert, fill V_i          (== c)
+  D : phase1 v-unfilled-inert with N_i(v) in cl1; phase2 v-prefilled-inert; fill V_i
+Law candidate:
+  a = min( 1+P1+W2, 1+W1+P2, F1+W2, W1+F2, U1+P2, P1+U2, D1+z'2, z'1+D2 )
+"""
+from itertools import combinations
+from zf import parse_graph6, Z_loop, components
+import sys
+from collections import Counter
+
+def cl(n, adj, loops, filled, v, vstate):
+    # vstate: 'inert' (v never forces), 'act' (v may force)
+    N = [adj[u] | (loops & (1 << u)) for u in range(n)]
+    ch = True
+    while ch:
+        ch = False
+        for u in range(n):
+            if u == v and vstate == 'inert': continue
+            m = N[u] & ~filled
+            if m and (m & (m-1)) == 0:
+                filled |= m; ch = True
+    return filled
+
+def minB(others, ok):
+    for k in range(len(others) + 1):
+        for S in combinations(others, k):
+            B = 0
+            for x in S: B |= 1 << x
+            if ok(B): return k
+    return len(others)
+
+def sub(adj, mask):
+    vs = [v for v in range(len(adj)) if (mask >> v) & 1]
+    idx = {v: i for i, v in enumerate(vs)}
+    a2 = [0]*len(vs)
+    for v in vs:
+        nb = adj[v] & mask
+        while nb:
+            b = nb & -nb; a2[idx[v]] |= 1 << idx[b.bit_length()-1]; nb ^= b
+    return len(vs), a2, idx
+
+def rloops(loops, mask, idx):
+    L = 0
+    for v, i in idx.items():
+        if (loops >> v) & 1: L |= 1 << i
+    return L
+
+def side(n, adj, loops, mask, v):
+    m, a2, idx = sub(adj, mask); L = rloops(loops, mask, idx); nv = idx[v]
+    full = (1 << m) - 1; vb = 1 << nv
+    others = [i for i in range(m) if i != nv]
+    Nv = a2[nv]
+    P  = minB(others, lambda B: cl(m,a2,L,B|vb,nv,'act') == full)
+    zp = minB(others, lambda B: cl(m,a2,L,B,nv,'act') == full)
+    U  = minB(others, lambda B: cl(m,a2,L,B,nv,'inert') == full)
+    def okF(B):
+        f1 = cl(m,a2,L,B,nv,'inert')
+        return (f1 & vb) and cl(m,a2,L,f1,nv,'act') == full
+    F  = minB(others, okF)
+    W  = minB(others, lambda B: cl(m,a2,L,B|vb,nv,'inert') == full)
+    def okD(B):
+        f1 = cl(m,a2,L,B,nv,'inert')
+        return (f1 & Nv) == Nv and cl(m,a2,L,f1|vb,nv,'inert') == full
+    D  = minB(others, okD)
+    return dict(P=P, zp=zp, U=U, F=F, W=W, D=D)
+
+def cutverts(n, adj):
+    full = (1 << n) - 1
+    return [v for v in range(n) if len(components(n, adj, full & ~(1 << v))) > 1]
+
+def decomps(n, adj):
+    full = (1 << n) - 1
+    for v in cutverts(n, adj):
+        comps = components(n, adj, full & ~(1 << v))
+        k = len(comps)
+        for t in range(1, 1 << (k-1)):
+            A = comps[0]; B = 0
+            for i in range(1, k):
+                if (t >> (i-1)) & 1: B |= comps[i]
+                else: A |= comps[i]
+            yield v, A | (1 << v), B | (1 << v)
+
+def main(maxn=6, gfile='conn_le7.g6'):
+    dist = Counter(); bad = {}
+    termhit = Counter()
+    cnt = 0
+    names = ['1+P1+W2','1+W1+P2','F1+W2','W1+F2','U1+P2','P1+U2','D1+zp2','zp1+D2']
+    for line in open(gfile):
+        g6 = line.strip()
+        if not g6: continue
+        n, adj = parse_graph6(g6)
+        if n > maxn: continue
+        ds = list(decomps(n, adj))
+        if not ds: continue
+        for loops in range(1 << n):
+            a = Z_loop(n, adj, loops)
+            for v, m1, m2 in ds:
+                s1 = side(n, adj, loops, m1, v); s2 = side(n, adj, loops, m2, v)
+                terms = [1+s1['P']+s2['W'], 1+s1['W']+s2['P'],
+                         s1['F']+s2['W'], s1['W']+s2['F'],
+                         s1['U']+s2['P'], s1['P']+s2['U'],
+                         s1['D']+s2['zp'], s1['zp']+s2['D']]
+                law = min(terms)
+                d = a - law
+                dist[d] += 1
+                for i,t in enumerate(terms):
+                    if t == law: termhit[names[i]] += 1
+                if d != 0 and d not in bad:
+                    bad[d] = (g6, loops, v, a, s1, s2)
+                cnt += 1
+    print("instances:", cnt)
+    print("a - law:", dict(dist))
+    print("binding terms:", dict(termhit))
+    for d, e in bad.items(): print("BAD", d, e)
+
+if __name__ == '__main__':
+    main(int(sys.argv[1]) if len(sys.argv) > 1 else 6)
+
+
+"""Verify pointwise machine relations & bit-independence; collect distributions
+needed for the UB analysis. Universe: all sides arising from cut decomps n<=6
+(i.e., all (H, v, L) with H connected <=6 vtcs, v any vertex, L any looping) --
+actually simpler: ALL connected H up to 6 vertices, all v, all loopings."""
+from zf import parse_graph6, Z_loop
+from q1lab4 import side, cl
+from collections import Counter
+import sys
+
+def delv(n, adj, v):
+    vs = [u for u in range(n) if u != v]
+    idx = {u: i for i, u in enumerate(vs)}
+    a2 = [0]*(n-1)
+    for u in vs:
+        nb = adj[u] & ~(1 << v)
+        while nb:
+            b = nb & -nb; a2[idx[u]] |= 1 << idx[b.bit_length()-1]; nb ^= b
+    return n-1, a2, idx
+
+def main(maxn=6, gfile='conn_le7.g6'):
+    viol = Counter(); dist = Counter()
+    cnt = 0
+    for line in open(gfile):
+        g6 = line.strip()
+        if not g6: continue
+        n, adj = parse_graph6(g6)
+        if n > maxn or n < 2: continue
+        full = (1 << n) - 1
+        for v in range(n):
+            m, a2, idx = delv(n, adj, v)
+            for Lm in range(1 << (n-1)):
+                # reconstruct loopings of H with restriction Lm, bit b at v
+                L0 = 0
+                for u, i in idx.items():
+                    if (Lm >> i) & 1: L0 |= 1 << u
+                q0 = side(n, adj, L0, full, v)             # bit 0
+                q1 = side(n, adj, L0 | (1 << v), full, v)  # bit 1
+                z0 = Z_loop(n, adj, L0); z1 = Z_loop(n, adj, L0 | (1 << v))
+                c  = Z_loop(m, a2, Lm) if m else 0
+                # bit independence of P,W,U,F,D
+                for k in ('P','W','U','F','D'):
+                    if q0[k] != q1[k]: viol['bitdep_'+k] += 1
+                P,W,U,F,D = q0['P'],q0['W'],q0['U'],q0['F'],q0['D']
+                zp0, zp1 = q0['zp'], q1['zp']
+                # relations
+                if W != c: viol['W!=c'] += 1
+                if not (P <= W): viol['P<=W'] += 1
+                if not (P >= c-1): viol['P>=c-1'] += 1
+                if not (U >= c): viol['U>=c'] += 1
+                if not (D >= W): viol['D>=W'] += 1
+                if not (D <= U): viol['D<=U'] += 1
+                if not (F <= U): viol['F<=U'] += 1
+                if not (zp0 <= F and zp1 <= F): viol['zp<=F'] += 1
+                if not (zp0 <= U and zp1 <= U): viol['zp<=U'] += 1
+                if not (D >= zp1): viol['D>=zp(bit1)'] += 1
+                if not (z0 == min(zp0, P+1)): viol['z0=min(zp0,P+1)'] += 1
+                if not (z1 == min(zp1, P+1)): viol['z1=min(zp1,P+1)'] += 1
+                if abs(z0 - z1) > 1: viol['flip'] += 1
+                if not (z0 - 1 <= c <= z0 + 1): viol['spread0'] += 1
+                # UB-side distributions
+                dist[('U-c', U - c)] += 1
+                dist[('F-c', F - c)] += 1
+                dist[('D-c', D - c)] += 1
+                dist[('zp0-z0', zp0 - z0)] += 1
+                dist[('zp1-z1', zp1 - z1)] += 1
+                dist[('F-U', F - U)] += 1
+                cnt += 1
+    print("triples:", cnt)
+    print("violations:", dict(viol) if viol else "NONE -- all relations hold")
+    print("distributions:")
+    byk = {}
+    for (k, d), c in dist.items(): byk.setdefault(k, {})[d] = c
+    for k in sorted(byk): print("  ", k, dict(sorted(byk[k].items())))
+
+if __name__ == '__main__':
+    main(int(sys.argv[1]) if len(sys.argv) > 1 else 6)
+
