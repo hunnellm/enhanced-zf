@@ -1,0 +1,10 @@
+# Sage worksheet usage (keep zhat_sage.py, mr_table.json, hyb.c in one folder; attach/load from there)
+load("zhat_sage.py")
+G = graphs.PetersenGraph()
+bounds(G)                                              # defaults: depth-1 Schur, 2-separation, table, all lower bounds
+bounds(G, depth=2)                                     # greater-depth Schur forcing
+bounds(G, depth=2, oddcycle=True, uniquecover=True)    # cover rules, separate switches
+bounds(G, backend="c")                                 # compiled hyb.c (needs gcc); 'python' forces pure Python; 'auto' uses C for n>=7 if available
+summary(G, depth=2, oddcycle=True)                     # each upper bound separately
+bounds(G, use=("Zhat",), twosep=False, table=False)    # switch components off
+register_matrix(G, A)                                  # add your own certified lower bound (exact check of the graph)
